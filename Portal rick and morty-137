@@ -1,0 +1,447 @@
+-- Portal Gun Script for Delta (Mobile)
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local UserInputService = game:GetService("UserInputService")
+local TweenService = game:GetService("TweenService")
+local SoundService = game:GetService("SoundService")
+local TeleportService = game:GetService("TeleportService")
+
+local player = Players.LocalPlayer
+local character = player.Character or player.CharacterAdded:Wait()
+local mouse = player:GetMouse()
+
+local SETTINGS = {
+    PortalColor = Color3.fromRGB(0, 255, 0),
+    PortalSize = 8,
+    MaxPortals = 2,
+    SoundVolume = 0.7,
+}
+
+-- Tool
+local tool = Instance.new("Tool")
+tool.Name = "Portal Gun"
+tool.RequiresHandle = false
+tool.CanBeDropped = false
+tool.Parent = player.Backpack
+
+-- Sounds
+local function createSound(id)
+    local sound = Instance.new("Sound")
+    sound.SoundId = "rbxassetid://" .. id
+    sound.Volume = SETTINGS.SoundVolume
+    sound.Parent = SoundService
+    return sound
+end
+
+local portalOpenSound = createSound(9120392871)
+local portalCloseSound = createSound(9120392872)
+local teleportSound = createSound(9120392873)
+
+-- Portal
+local Portal = {}
+Portal.__index = Portal
+
+function Portal.new(position, normal)
+    local self = setmetatable({}, Portal)
+    
+    self.model = Instance.new("Model")
+    self.model.Name = "Portal"
+    
+    local disc = Instance.new("Part")
+    disc.Name = "Disc"
+    disc.Size = Vector3.new(SETTINGS.PortalSize, SETTINGS.PortalSize, 0.2)
+    disc.Anchored = true
+    disc.CanCollide = false
+    disc.CanQuery = false
+    disc.Material = Enum.Material.Neon
+    disc.Color = SETTINGS.PortalColor
+    disc.Transparency = 0.3
+    disc.CFrame = CFrame.lookAt(position, position + normal)
+    disc.Parent = self.model
+    
+    local ring = Instance.new("Part")
+    ring.Name = "Ring"
+    ring.Size = Vector3.new(SETTINGS.PortalSize + 1, SETTINGS.PortalSize + 1, 0.1)
+    ring.Anchored = true
+    ring.CanCollide = false
+    ring.CanQuery = false
+    ring.Material = Enum.Material.Neon
+    ring.Color = SETTINGS.PortalColor
+    ring.Transparency = 0.6
+    ring.CFrame = disc.CFrame
+    ring.Parent = self.model
+    
+    local particles = Instance.new("ParticleEmitter")
+    particles.Name = "Swirl"
+    particles.Texture = "rbxassetid://1234567890"
+    particles.Color = ColorSequence.new(SETTINGS.PortalColor)
+    particles.Size = NumberSequence.new({NumberSequenceKeypoint.new(0, 2), NumberSequenceKeypoint.new(1, 4)})
+    particles.Transparency = NumberSequence.new({NumberSequenceKeypoint.new(0, 0.8), NumberSequenceKeypoint.new(1, 1)})
+    particles.VelocityInheritance = 0
+    particles.SpreadAngle = Vector2.new(360, 360)
+    particles.Lifetime = NumberRange.new(1, 2)
+    particles.Rate = 50
+    particles.RotSpeed = NumberRange.new(10, 30)
+    particles.Speed = NumberRange.new(1, 3)
+    particles.Parent = disc
+    
+    local light = Instance.new("PointLight")
+    light.Name = "Light"
+    light.Color = SETTINGS.PortalColor
+    light.Range = 20
+    light.Brightness = 2
+    light.Parent = disc
+    
+    local teleportBox = Instance.new("Part")
+    teleportBox.Name = "TeleportBox"
+    teleportBox.Size = Vector3.new(SETTINGS.PortalSize, SETTINGS.PortalSize, 1)
+    teleportBox.Anchored = true
+    teleportBox.CanCollide = false
+    teleportBox.CanQuery = false
+    teleportBox.Transparency = 1
+    teleportBox.CFrame = disc.CFrame
+    teleportBox.Parent = self.model
+    
+    self.position = position
+    self.normal = normal
+    self.disc = disc
+    self.teleportBox = teleportBox
+    self.connectedPortal = nil
+    self.lastTeleportTime = 0
+    
+    portalOpenSound:Play()
+    
+    disc.Size = Vector3.new(0.1, 0.1, 0.1)
+    TweenService:Create(disc, TweenInfo.new(0.5, Enum.EasingStyle.Back), {
+        Size = Vector3.new(SETTINGS.PortalSize, SETTINGS.PortalSize, 0.2)
+    }):Play()
+    
+    TweenService:Create(ring, TweenInfo.new(0.5, Enum.EasingStyle.Back), {
+        Size = Vector3.new(SETTINGS.PortalSize + 1, SETTINGS.PortalSize + 1, 0.1)
+    }):Play()
+    
+    self.model.Parent = workspace
+    return self
+end
+
+function Portal:connect(otherPortal)
+    self.connectedPortal = otherPortal
+    otherPortal.connectedPortal = self
+end
+
+function Portal:teleport(character)
+    if not self.connectedPortal then return false end
+    if tick() - self.lastTeleportTime < 2 then return false end
+    
+    local humanoid = character:FindFirstChild("Humanoid")
+    if not humanoid then return false end
+    
+    local box = self.teleportBox
+    local characterPos = character.PrimaryPart.Position
+    local distance = (characterPos - box.Position).Magnitude
+    
+    if distance > SETTINGS.PortalSize / 2 then return false end
+    
+    local target = self.connectedPortal
+    local targetPos = target.position + target.normal * 2
+    
+    teleportSound:Play()
+    
+    local tween = TweenService:Create(character.PrimaryPart, TweenInfo.new(0.3), {
+        Position = targetPos
+    })
+    tween:Play()
+    
+    humanoid:MoveTo(targetPos)
+    
+    self.lastTeleportTime = tick()
+    target.lastTeleportTime = tick()
+    return true
+end
+
+function Portal:destroy()
+    portalCloseSound:Play()
+    TweenService:Create(self.disc, TweenInfo.new(0.3, Enum.EasingStyle.Quad), {
+        Size = Vector3.new(0.1, 0.1, 0.1)
+    }):Play()
+    wait(0.3)
+    self.model:Destroy()
+end
+
+-- Portal Manager
+local PortalManager = {
+    portals = {},
+}
+
+function PortalManager:createPortal(position, normal)
+    while #self.portals >= SETTINGS.MaxPortals do
+        local oldest = table.remove(self.portals, 1)
+        oldest:destroy()
+    end
+    
+    local portal = Portal.new(position, normal)
+    table.insert(self.portals, portal)
+    
+    if #self.portals == 2 then
+        self.portals[1]:connect(self.portals[2])
+    end
+    return portal
+end
+
+function PortalManager:clearPortals()
+    for _, portal in ipairs(self.portals) do
+        portal:destroy()
+    end
+    self.portals = {}
+end
+
+function PortalManager:update()
+    for _, portal in ipairs(self.portals) do
+        if portal.connectedPortal then
+            for _, plr in ipairs(Players:GetPlayers()) do
+                local char = plr.Character
+                if char and char.PrimaryPart then
+                    portal:teleport(char)
+                end
+            end
+        end
+    end
+end
+
+-- GUI Menu
+local function createMenu()
+    local screenGui = Instance.new("ScreenGui")
+    screenGui.Name = "PortalMenu"
+    screenGui.ResetOnSpawn = false
+    screenGui.Parent = player.PlayerGui
+    
+    local mainFrame = Instance.new("Frame")
+    mainFrame.Name = "MainFrame"
+    mainFrame.Size = UDim2.new(0, 220, 0, 320)
+    mainFrame.Position = UDim2.new(0.85, -220, 0.1, 0)
+    mainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+    mainFrame.BackgroundTransparency = 0.1
+    mainFrame.BorderSizePixel = 2
+    mainFrame.BorderColor3 = Color3.fromRGB(0, 255, 0)
+    mainFrame.Parent = screenGui
+    
+    local titleBar = Instance.new("TextButton")
+    titleBar.Name = "TitleBar"
+    titleBar.Size = UDim2.new(1, 0, 0, 30)
+    titleBar.Position = UDim2.new(0, 0, 0, 0)
+    titleBar.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+    titleBar.BackgroundTransparency = 0.3
+    titleBar.Text = ""
+    titleBar.TextColor3 = Color3.new(1, 1, 1)
+    titleBar.TextScaled = true
+    titleBar.Parent = mainFrame
+    
+    local collapseBtn = Instance.new("ImageButton")
+    collapseBtn.Name = "CollapseBtn"
+    collapseBtn.Size = UDim2.new(0, 30, 1, -4)
+    collapseBtn.Position = UDim2.new(1, -35, 0, 2)
+    collapseBtn.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    collapseBtn.Image = "rbxassetid://1307080859"
+    collapseBtn.Parent = titleBar
+    
+    local contentFrame = Instance.new("Frame")
+    contentFrame.Name = "ContentFrame"
+    contentFrame.Size = UDim2.new(1, 0, 1, -30)
+    contentFrame.Position = UDim2.new(0, 0, 0, 30)
+    contentFrame.BackgroundTransparency = 1
+    contentFrame.Parent = mainFrame
+    
+    local coordX = Instance.new("TextBox")
+    coordX.Size = UDim2.new(0.3, -5, 0, 25)
+    coordX.Position = UDim2.new(0, 0, 0, 10)
+    coordX.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    coordX.TextColor3 = Color3.new(1, 1, 1)
+    coordX.Text = ""
+    coordX.PlaceholderText = "X"
+    coordX.Parent = contentFrame
+    
+    local coordY = Instance.new("TextBox")
+    coordY.Size = UDim2.new(0.3, -5, 0, 25)
+    coordY.Position = UDim2.new(0.35, 0, 0, 10)
+    coordY.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    coordY.TextColor3 = Color3.new(1, 1, 1)
+    coordY.Text = ""
+    coordY.PlaceholderText = "Y"
+    coordY.Parent = contentFrame
+    
+    local coordZ = Instance.new("TextBox")
+    coordZ.Size = UDim2.new(0.3, -5, 0, 25)
+    coordZ.Position = UDim2.new(0.7, 0, 0, 10)
+    coordZ.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    coordZ.TextColor3 = Color3.new(1, 1, 1)
+    coordZ.Text = ""
+    coordZ.PlaceholderText = "Z"
+    coordZ.Parent = contentFrame
+    
+    local teleportBtn = Instance.new("TextButton")
+    teleportBtn.Size = UDim2.new(1, 0, 0, 30)
+    teleportBtn.Position = UDim2.new(0, 0, 0, 40)
+    teleportBtn.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+    teleportBtn.BackgroundTransparency = 0.3
+    teleportBtn.Text = "Teleport"
+    teleportBtn.TextColor3 = Color3.new(1, 1, 1)
+    teleportBtn.TextScaled = true
+    teleportBtn.Parent = contentFrame
+    
+    local placeIdBox = Instance.new("TextBox")
+    placeIdBox.Size = UDim2.new(0.7, 0, 0, 25)
+    placeIdBox.Position = UDim2.new(0, 0, 0, 75)
+    placeIdBox.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    placeIdBox.TextColor3 = Color3.new(1, 1, 1)
+    placeIdBox.PlaceholderText = "Place ID"
+    placeIdBox.Parent = contentFrame
+    
+    local placeTeleportBtn = Instance.new("TextButton")
+    placeTeleportBtn.Size = UDim2.new(0.25, 0, 0, 25)
+    placeTeleportBtn.Position = UDim2.new(0.75, 0, 0, 75)
+    placeTeleportBtn.BackgroundColor3 = Color3.fromRGB(0, 255, 0)
+    placeTeleportBtn.BackgroundTransparency = 0.3
+    placeTeleportBtn.Text = "Go"
+    placeTeleportBtn.TextColor3 = Color3.new(1, 1, 1)
+    placeTeleportBtn.TextScaled = true
+    placeTeleportBtn.Parent = contentFrame
+    
+    local clearBtn = Instance.new("TextButton")
+    clearBtn.Size = UDim2.new(1, 0, 0, 30)
+    clearBtn.Position = UDim2.new(0, 0, 0, 110)
+    clearBtn.BackgroundColor3 = Color3.fromRGB(255, 0, 0)
+    clearBtn.BackgroundTransparency = 0.3
+    clearBtn.Text = "Clear"
+    clearBtn.TextColor3 = Color3.new(1, 1, 1)
+    clearBtn.TextScaled = true
+    clearBtn.Parent = contentFrame
+    
+    local volumeSlider = Instance.new("TextBox")
+    volumeSlider.Size = UDim2.new(0.5, 0, 0, 20)
+    volumeSlider.Position = UDim2.new(0, 0, 0, 150)
+    volumeSlider.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
+    volumeSlider.TextColor3 = Color3.new(1, 1, 1)
+    volumeSlider.Text = tostring(SETTINGS.SoundVolume)
+    volumeSlider.PlaceholderText = "Volume"
+    volumeSlider.Parent = contentFrame
+    
+    local collapsed = false
+    local originalSize = mainFrame.Size
+    
+    collapseBtn.MouseButton1Click:Connect(function()
+        collapsed = not collapsed
+        if collapsed then
+            mainFrame.Size = UDim2.new(0, 220, 0, 30)
+            contentFrame.Visible = false
+            collapseBtn.Rotation = -90
+        else
+            mainFrame.Size = originalSize
+            contentFrame.Visible = true
+            collapseBtn.Rotation = 0
+        end
+    end)
+    
+    local dragging = false
+    local dragStart, startPos
+    
+    titleBar.MouseButton1Down:Connect(function()
+        dragging = true
+        dragStart = UserInputService:GetMouseLocation()
+        startPos = mainFrame.Position
+    end)
+    
+    UserInputService.InputChanged:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseMovement and dragging then
+            local delta = input.Position - dragStart
+            mainFrame.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + delta.X, startPos.Y.Scale, startPos.Y.Offset + delta.Y)
+        end
+    end)
+    
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1 then
+            dragging = false
+        end
+    end)
+    
+    teleportBtn.MouseButton1Click:Connect(function()
+        local x = tonumber(coordX.Text)
+        local y = tonumber(coordY.Text)
+        local z = tonumber(coordZ.Text)
+        if x and y and z then
+            local pos = Vector3.new(x, y, z)
+            local char = player.Character
+            if char and char.PrimaryPart then
+                char.PrimaryPart.Position = pos
+                local humanoid = char:FindFirstChild("Humanoid")
+                if humanoid then humanoid:MoveTo(pos) end
+                teleportSound:Play()
+            end
+        end
+    end)
+    
+    placeTeleportBtn.MouseButton1Click:Connect(function()
+        local placeId = tonumber(placeIdBox.Text)
+        if placeId then
+            TeleportService:Teleport(placeId, player)
+        end
+    end)
+    
+    clearBtn.MouseButton1Click:Connect(function()
+        PortalManager:clearPortals()
+    end)
+    
+    volumeSlider.FocusLost:Connect(function()
+        local vol = tonumber(volumeSlider.Text)
+        if vol and vol >= 0 and vol <= 1 then
+            SETTINGS.SoundVolume = vol
+            portalOpenSound.Volume = vol
+            portalCloseSound.Volume = vol
+            teleportSound.Volume = vol
+        end
+    end)
+end
+
+-- Shoot
+local function shootPortal()
+    if not character or not character.PrimaryPart then return end
+    local hit = mouse.Hit
+    if not hit then return end
+    
+    local ray = Ray.new(character.PrimaryPart.Position, (hit.Position - character.PrimaryPart.Position).Unit * 100)
+    local part, hitPos, surfNorm = workspace:FindPartOnRayWithIgnoreList(ray, {character})
+    
+    if part and hitPos then
+        PortalManager:createPortal(hitPos, surfNorm)
+    end
+end
+
+tool.Activated:Connect(shootPortal)
+
+UserInputService.InputBegan:Connect(function(input)
+    if input.KeyCode == Enum.KeyCode.Q then
+        shootPortal()
+    end
+end)
+
+player.CharacterAdded:Connect(function(newChar)
+    character = newChar
+    wait(0.5)
+    if not tool.Parent then
+        tool.Parent = player.Backpack
+    end
+    wait(0.1)
+    if player.Character then
+        tool.Parent = player.Character
+    end
+end)
+
+RunService.Heartbeat:Connect(function()
+    PortalManager:update()
+end)
+
+createMenu()
+wait(1)
+if player.Character then
+    tool.Parent = player.Character
+end
